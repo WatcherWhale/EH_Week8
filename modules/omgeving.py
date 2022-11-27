@@ -2,4 +2,4 @@ import os
 
 def run(**args):
     print("[*] In module omgeving")
-    return os.environ
+    return str(os.environ).encode()
